@@ -1,0 +1,47 @@
+Passo 1: O Coração (Ollama + Backend)
+O Ollama será o seu "motor de pensamento". Como você quer equilíbrio, vamos configurar o Qwen 2.5 (14B) como o modelo principal.
+
+Certifique-se que o Ollama está rodando.
+
+Crie um Modelfile customizado: Não use o Qwen "puro". No terminal, crie um arquivo chamado personagem.modelfile com as instruções de quem ela é (System Prompt).
+
+Exemplo: FROM qwen2.5:14b + PARAMETER temperature 0.8 (para dar criatividade).
+
+Suba o modelo: ollama create minha-vtuber -f personagem.modelfile.
+
+Passo 2: O Sistema Nervoso (Shogun-AI)
+A Shogun-AI vai conectar o chat da sua live ao Ollama.
+
+Conexão LLM: Na interface da Shogun, aponte para o endpoint do Ollama (http://localhost:11434/v1).
+
+Memória (RAG): Ative a função de memória da Shogun. Isso permitirá que ela "estude" documentos sobre sua lore ou lembre de usuários recorrentes.
+
+Integração de Chat: Conecte as chaves de API da Twitch ou YouTube na Shogun para que ela "leia" o chat em tempo real.
+
+Passo 3: A Voz (O Ponto Crítico da Qualidade)
+Uma VTuber com voz do Google Tradutor perde todo o encanto.
+
+Opção de Alta Qualidade (Paga): ElevenLabs. É a voz mais humana do mundo, mas custa caro por caractere.
+
+Opção Equilibrada (Local/Grátis): VITS ou GPT-SoVITS. O GPT-SoVITS permite que você clone sua própria voz ou uma voz de anime específica. A Shogun-AI tem suporte para esses motores locais.
+
+Dica: Use um plugin de Voz-para-Texto (STT) se você quiser que ela responda ao que você fala no microfone também.
+
+Passo 4: O Corpo (VTube Studio + Live2D)
+Aqui é onde o texto vira movimento.
+
+VTube Studio: Abra o seu modelo Live2D.
+
+Plugin de Lip-Sync: Configure a Shogun-AI para enviar o áudio gerado para o "Virtual Audio Cable". No VTube Studio, configure o Lip-sync para ouvir esse cabo. Assim, a boca dela mexe perfeitamente com o que a IA fala.
+
+Expressões de IA: Na Shogun, configure gatilhos. Se a resposta contiver "[FELIZ]", a Shogun envia um comando via API para o VTube Studio ativar a expressão de sorriso no modelo.
+
+Resumo do Fluxo de Dados:
+Chat da Live → Shogun-AI (Processa o contexto) → Ollama (Qwen 14B) (Gera a fala) → TTS (Vocal) → VTube Studio (Lip-sync e animação) → OBS Studio (Transmissão).
+
+Dica de "Equilíbrio Real" para Live:
+Se você sentir que o Qwen 14B está engasgando o seu jogo:
+
+Mantenha o Qwen 14B apenas para doações (Superchats) ou perguntas complexas.
+
+Use o Llama 3 (8B) ou Mistral (7B) para as interações rápidas de "bom dia" e conversas banais.

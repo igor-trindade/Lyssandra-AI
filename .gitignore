@@ -1,0 +1,22 @@
+# Ambientes Virtuais (Venv)
+venv/
+.venv/
+env/
+venv.bak/
+
+# Cache de Áudio e Saídas
+cache/output/*.mp3
+cache/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Configurações de IDE
+.vscode/
+.idea/
+
+# Arquivos temporários do Sistema
+.DS_Store
+Thumbs.db

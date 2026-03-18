@@ -1,4 +1,4 @@
-FROM llama3
+FROM qwen2.5:14b
 
 # Ajustes de criatividade e controle de repetição
 PARAMETER temperature 0.95
