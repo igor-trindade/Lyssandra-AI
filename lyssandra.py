@@ -1,144 +1,228 @@
-import ollama
-import edge_tts
 import asyncio
 import subprocess
 import re
+import time
 import os
+from ddgs import DDGS
+from ollama import AsyncClient
+from google import genai
+from google.genai import types
+import edge_tts
 
-# Configurações
-VOZ = "pt-BR-FranciscaNeural" 
-RATE = "+10%"
+# ================= CONFIG =================
+VOZ = "pt-BR-FranciscaNeural"
+RATE = "+15%"
 PITCH = "-5Hz"
-MODELO_OLLAMA = "lyssandra2:latest"
+MODELO_OLLAMA = "lyssandra:latest"
+MODELO_GEMINI = "gemini-2.5-flash"
+ARQUIVO_MODELFILE = "lyssandra.modelfile"
 
-# Caminho da pasta de cache
-CACHE_DIR = os.path.join("cache", "output")
+API_KEY = "AIzaSyC6PYxtNmYhqvDlyxm34sk_huYThY0AJ8A"
+cliente_gemini = genai.Client(api_key=API_KEY) if API_KEY else None
 
-# Cria a pasta se ela não existir
-if not os.path.exists(CACHE_DIR):
-    os.makedirs(CACHE_DIR)
-
-def limpar_texto_para_audio(texto):
-    """Remove ações e símbolos para o áudio não bugar"""
-    t = re.sub(r'\[.*?\]|\(.*?\)', '', texto)
-    t = re.sub(r'\*[^*]+\s[^*]+\*', '', t)
-    t = t.replace('*', '').replace('"', '').strip()
-    return t
-
-async def baixar_audio(texto, nome_arquivo):
-    """Tarefa dedicada apenas ao download dentro da pasta cache/output"""
+# ================= PERSONALIDADE =================
+def carregar_personalidade_modelfile(caminho):
+    fallback = "Você é Lyssandra. Personalidade: arrogante, possessiva e debochada."
     try:
-        # Define o caminho completo dentro da pasta de cache
-        caminho_completo = os.path.join(CACHE_DIR, nome_arquivo)
-        comunicador = edge_tts.Communicate(texto, VOZ, rate=RATE, pitch=PITCH)           
-        await comunicador.save(caminho_completo)
-        return True
+        if not os.path.exists(caminho):
+            return fallback
+
+        with open(caminho, "r", encoding="utf-8") as f:
+            conteudo = f.read()
+
+        match = re.search(r'SYSTEM\s+["\']{3}(.*?)["\']{3}', conteudo, re.DOTALL | re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+
+        match_simples = re.search(r'SYSTEM\s+["\']?(.*?)["\']?\n', conteudo, re.IGNORECASE)
+        if match_simples:
+            return match_simples.group(1).strip()
+
+        return fallback
+    except:
+        return fallback
+
+PERSONALIDADE_LYSSANDRA = carregar_personalidade_modelfile(ARQUIVO_MODELFILE)
+
+# ================= LIMPEZA =================
+def limpar_texto(texto):
+    texto = re.sub(r'\[.*?\]|\(.*?\)', '', texto)
+    return texto.replace('*', '').replace('"', '').strip()
+
+# ================= WEB =================
+def buscar_na_web(query):
+    try:
+        with DDGS() as ddgs:
+            resultados = list(ddgs.text(query, max_results=3))
+            return "\n".join([r['body'] for r in resultados])
+    except:
+        return "Erro na busca"
+
+# ================= AUDIO (FFPLAY INSANO) =================
+async def reproduzir_audio_stream(texto: str):
+    if len(texto) < 5:
+        return
+
+    processo = await asyncio.create_subprocess_exec(
+        "ffplay",
+        "-nodisp",
+        "-autoexit",
+        "-loglevel", "quiet",
+        "-fflags", "nobuffer",
+        "-flags", "low_delay",
+        "-probesize", "32",
+        "-analyzeduration", "0",
+        "-",
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+
+    try:
+        comunicador = edge_tts.Communicate(texto, VOZ, rate=RATE, pitch=PITCH)
+
+        primeiro = True
+
+        async for chunk in comunicador.stream():
+            if chunk["type"] == "audio" and processo.stdin:
+
+                # 🔥 evita corte inicial
+                if primeiro:
+                    await asyncio.sleep(0.08)
+                    primeiro = False
+
+                processo.stdin.write(chunk["data"])
+                await processo.stdin.drain()
+
     except Exception as e:
-        print(f"\n[Erro Download: {e}]")
-        return False
+        print(f"\n[Erro áudio: {e}]")
 
-async def processador_de_audio(fila_reproducao):
-    """Lê a fila infinitamente e toca os arquivos na ordem"""
+    finally:
+        if processo.stdin:
+            processo.stdin.close()
+        await processo.wait()
+
+async def worker_audio(fila):
     while True:
-        item = await fila_reproducao.get()
-        if item is None: break 
-        
-        nome_arquivo = item['arquivo']
-        tarefa_download = item['tarefa']
-        
-        caminho_completo = os.path.join(CACHE_DIR, nome_arquivo)
-        
-        # Espera o download terminar
-        await tarefa_download
-        
-        if os.path.exists(caminho_completo):
-            processo = await asyncio.create_subprocess_exec(
-                "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", caminho_completo,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
-            await processo.wait()
-            
-            # Pequena pausa para o sistema liberar o arquivo antes de deletar
-            await asyncio.sleep(0.1)
-            try:
-                if os.path.exists(caminho_completo):
-                    os.remove(caminho_completo)
-            except:
-                pass
-        
-        fila_reproducao.task_done()
-
-async def get_input(prompt):
-    return await asyncio.to_thread(input, prompt)
-
-async def main_async():
-    print("\n👑 LYSSANDRA ONLINE - SALVANDO EM CACHE/OUTPUT")
-    
-    historico_chat = []
-    fila_reproducao = asyncio.Queue()
-    tarefa_processador = asyncio.create_task(processador_de_audio(fila_reproducao))
-    contador = 0
-
-    while True:
-        pergunta = await get_input("\nVocê: ")
-        
-        if pergunta.strip().lower() == 'sair': 
-            await fila_reproducao.put(None)
+        texto = await fila.get()
+        if texto is None:
             break
-            
-        historico_chat.append({'role': 'user', 'content': pergunta})
-        print("Lyssandra: ", end="", flush=True)
-        
+        await reproduzir_audio_stream(texto)
+        fila.task_done()
+
+# ================= STREAM PROCESS =================
+async def processar_stream(token, fila, estado):
+    estado["buffer"] += token
+
+    if any(p in estado["buffer"] for p in ['. ', '! ', '? ', ', ', '\n']) and len(estado["buffer"]) > 35:
+        partes = re.split(r'(?<=[.!?,\n])\s+', estado["buffer"], 1)
+
+        if len(partes) > 1:
+            frase = limpar_texto(partes[0])
+
+            if len(frase) > 20:
+                estado["acumulador"] += frase + " "
+
+            if len(estado["acumulador"]) > 80:
+                await fila.put(estado["acumulador"].strip())
+                estado["acumulador"] = ""
+
+            estado["buffer"] = partes[1]
+
+async def finalizar(fila, estado):
+    resto = limpar_texto(estado["buffer"])
+    if resto:
+        estado["acumulador"] += resto
+
+    if estado["acumulador"]:
+        await fila.put(estado["acumulador"].strip())
+
+# ================= GEMINI =================
+async def processar_gemini(prompt, historico, fila):
+    contents = []
+
+    for m in historico:
+        role = "user" if m["role"] == "user" else "model"
+        contents.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
+
+    contents.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
+
+    instrucao = f"""{PERSONALIDADE_LYSSANDRA}
+Mantenha-se sempre na personagem.
+"""
+
+    config = types.GenerateContentConfig(
+        tools=[{"google_search": {}}],
+        system_instruction=instrucao
+    )
+
+    stream = await cliente_gemini.aio.models.generate_content_stream(
+        model=MODELO_GEMINI,
+        contents=contents,
+        config=config
+    )
+
+    estado = {"buffer": "", "acumulador": ""}
+    resposta = ""
+
+    print("Lyssandra: ", end="", flush=True)
+
+    async for chunk in stream:
+        if chunk.text:
+            print(chunk.text, end="", flush=True)
+            resposta += chunk.text
+            await processar_stream(chunk.text, fila, estado)
+
+    await finalizar(fila, estado)
+    return resposta
+
+# ================= OLLAMA =================
+async def processar_ollama(prompt, historico, fila):
+    cliente = AsyncClient()
+    mensagens = historico + [{'role': 'user', 'content': prompt}]
+
+    stream = await cliente.chat(model=MODELO_OLLAMA, messages=mensagens, stream=True)
+
+    estado = {"buffer": "", "acumulador": ""}
+    resposta = ""
+
+    print("Lyssandra (Local): ", end="", flush=True)
+
+    async for chunk in stream:
+        token = chunk['message']['content']
+        print(token, end="", flush=True)
+        resposta += token
+        await processar_stream(token, fila, estado)
+
+    await finalizar(fila, estado)
+    return resposta
+
+# ================= MAIN =================
+async def main():
+    print("\n👑 LYSSANDRA\n")
+
+    historico = []
+    fila = asyncio.Queue()
+
+    asyncio.create_task(worker_audio(fila))
+
+    while True:
+        pergunta = await asyncio.to_thread(input, "\nVocê: ")
+
+        if pergunta.lower() == "sair":
+            await fila.put(None)
+            break
+
         try:
-            resposta_stream = ollama.chat(model=MODELO_OLLAMA, messages=historico_chat, stream=True)
-            
-            buffer_texto = ""
-            resposta_completa_ia = ""
-
-            for pedaco in resposta_stream:
-                token = pedaco['message']['content']
-                print(token, end="", flush=True)
-                
-                buffer_texto += token
-                resposta_completa_ia += token
-                
-                # Gatilho de frase
-                if any(p in buffer_texto for p in ['.', '!', '?', '\n']) and len(buffer_texto) > 15:
-                    partes = re.split(r'(?<=[.!?\n])', buffer_texto, 1)
-                    
-                    if len(partes) > 1:
-                        frase_pronta = partes[0].strip()
-                        texto_para_voz = limpar_texto_para_audio(frase_pronta)
-                        
-                        if len(texto_para_voz) > 2:
-                            nome_arq = f"fala_{contador}.mp3"
-                            # DISPARA DOWNLOAD PARALELO
-                            t_dl = asyncio.create_task(baixar_audio(texto_para_voz, nome_arq))
-                            # JOGA NA FILA DE PLAY
-                            fila_reproducao.put_nowait({'arquivo': nome_arq, 'tarefa': t_dl})
-                            contador += 1
-                            
-                        buffer_texto = partes[1]
-
-            # Processa a sobra final
-            sobra = limpar_texto_para_audio(buffer_texto)
-            if len(sobra) > 2:
-                nome_arq = f"fala_{contador}.mp3"
-                t_dl = asyncio.create_task(baixar_audio(sobra, nome_arq))
-                fila_reproducao.put_nowait({'arquivo': nome_arq, 'tarefa': t_dl})
-                contador += 1
-
-            historico_chat.append({'role': 'assistant', 'content': resposta_completa_ia})
-            print() 
-            
+            resposta = await processar_gemini(pergunta, historico, fila)
         except Exception as e:
-            print(f"\n❌ Erro: {e}")
+            print(f"\n[Fallback Ollama: {e}]")
+            resposta = await processar_ollama(pergunta, historico, fila)
 
-def main():
-    try:
-        asyncio.run(main_async())
-    except KeyboardInterrupt:
-        print("\nSaindo...")
+        historico.append({"role": "user", "content": pergunta})
+        historico.append({"role": "assistant", "content": resposta})
+
+        print()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
